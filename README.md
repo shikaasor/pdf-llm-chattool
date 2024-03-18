@@ -1,45 +1,39 @@
-# Chat with Your PDFs
+Chat with PDF using Gemini
 
-This is a Streamlit application that allows you to chat with your PDF documents using conversational AI models. You can upload your PDF files and ask questions about the content of the documents, and the system will provide relevant responses based on the trained models.
+This Streamlit application allows you to ask questions and have a conversation based on the information extracted from uploaded PDF documents. It leverages the power of Google Cloud AI's Gemini-Pro model for natural language processing and retrieval.
 
-## Getting Started
+How it Works:
 
-To run the application, follow these steps:
+Upload PDF Files: Select and upload one or more PDF documents you want to process.
+Ask a Question: Once processing is complete, type your question in the text box.
+Get Answers: The application searches the extracted text from the PDFs and uses Gemini-Pro to answer your question in a comprehensive way.
 
-1. Clone the repository to your local machine.
-2. Install the required dependencies by running `pip install -r requirements.txt`.
-3. Make sure you have the required PDF files ready for uploading.
+Key Features:
 
-## Usage
+Contextual Information Retrieval: Extracts relevant pieces of text from uploaded PDFs based on your question.
+Natural Language Processing: Uses Gemini-Pro to understand your questions and generate informative answers.
+User-Friendly Interface: Streamlit provides a straightforward interface for easy interaction.
+Requirements:
 
-1. Run the application by executing `streamlit run app.py` in your terminal.
-2. The application will open in your browser and display an interface for uploading PDF files.
-3. Click on the "Upload your PDF files here" button and select one or more PDF files from your local machine.
-4. Once the files are uploaded, click on the "Process" button to start processing the PDF content.
-5. You can now enter your questions in the text input field and click "Enter" to receive responses from the system.
-6. The system will display a conversation history, alternating between your questions and the system's responses.
+Python libraries: streamlit, PyPDF2, langchain, google.generativeai, dotenv
+Google Cloud Project with API keys for:
+Google GenerativeAI (instructions on https://cloud.google.com/)
 
-## Dependencies
+Setup Instructions:
 
-The application relies on the following libraries:
+Clone the Repository:
+git clone https://github.com/shikaasor/pdf-llm-chattool
 
-- streamlit
-- dotenv
-- PyPDF2
-- langchain
-- htmlTemplates
 
-You can find the complete list of dependencies in the `requirements.txt` file.
+Install Dependencies:
 
-## Acknowledgments
+pip install -r requirements.txt
 
-This application utilizes several open-source libraries and technologies. Here are the main components:
+Configure Environment Variables:
+Create a .env file in the project root.
+Add the following lines, replacing placeholders with your actual API keys:
+GOOGLE_API_KEY=<your_google_api_key>
 
-- Streamlit: A Python library for building interactive web applications.
-- PyPDF2: A library for reading and manipulating PDF files.
-- langchain: A library for text processing, embeddings, and chat models.
-- htmlTemplates: HTML templates for displaying chat messages in the Streamlit app.
+Run the App:
 
-## License
-
-This project is licensed under the [MIT License](LICENSE).
+streamlit run app.py
