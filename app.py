@@ -2,8 +2,7 @@ from datetime import datetime
 import streamlit as st
 import logging
 import os
-import threading
-from typing import List, Optional
+from typing import List
 from dataclasses import dataclass
 from pathlib import Path
 from langchain_community.document_loaders import PDFPlumberLoader
@@ -27,6 +26,19 @@ class ChatMessage:
     question: str
     answer: str
     context: str
+
+def reset_all_states():
+    """Reset all session states and widgets"""
+    # Clear file uploader by resetting its key
+    st.session_state["file_uploader_key"] = f"file_{datetime.now().timestamp()}"
+    
+    # Clear text input by resetting its key
+    st.session_state["query_input_key"] = f"query_{datetime.now().timestamp()}"
+    
+    # Clear all session state variables
+    for key in list(st.session_state.keys()):
+        if key not in ["file_uploader_key", "query_input_key"]:
+            del st.session_state[key]
 
 class DocumentQASystem:
     TEMP_DIR = Path("temp")
@@ -75,6 +87,13 @@ class DocumentQASystem:
 
     def _initialize_session_state(self):
         """Initialize Streamlit session state variables."""
+        # Initialize widget keys if they don't exist
+        if "file_uploader_key" not in st.session_state:
+            st.session_state["file_uploader_key"] = "file_uploader_initial"
+        if "query_input_key" not in st.session_state:
+            st.session_state["query_input_key"] = "query_input_initial"
+            
+        # Initialize other session state variables
         if 'uploaded_files' not in st.session_state:
             st.session_state.uploaded_files = []
         if 'chat_history' not in st.session_state:
@@ -190,7 +209,7 @@ def setup_streamlit_ui():
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         .chat-message.question {
-            background-color: #1E2261;
+            background-color: #1e3a8a;
             color: white;
         }
         .chat-message.answer {
@@ -214,6 +233,7 @@ def setup_streamlit_ui():
         </style>
     """, unsafe_allow_html=True)
 
+
 def main():
     setup_streamlit_ui()
     qa_system = DocumentQASystem()
@@ -222,12 +242,14 @@ def main():
     with st.sidebar:
         st.title("📑 Document Management")
         
+        # Use dynamic key for file uploader to reset it
         uploaded_files = st.file_uploader(
             "Upload PDF Documents",
             type=['pdf'],
             accept_multiple_files=True,
             help="Upload one or more PDF documents to analyze",
-            label_visibility="visible"
+            label_visibility="visible",
+            key=st.session_state["file_uploader_key"]
         )
         
         if st.button("Process Documents", type="primary"):
@@ -241,6 +263,8 @@ def main():
                                 st.success(f"✅ {uploaded_file.name}")
                         progress_bar.progress((i + 1) / len(uploaded_files))
                 progress_bar.empty()
+                # Reset file uploader after processing
+                st.session_state["file_uploader_key"] = str(datetime.now())
             else:
                 st.warning("Please upload documents first.")
         
@@ -250,24 +274,19 @@ def main():
                 st.text(f"• {file}")
         
         if st.button("Reset Session", type="secondary"):
-            st.session_state.uploaded_files = []
-            st.session_state.chat_history = []
-            st.session_state.vector_store = None
-            qa_system.vector_store = None
+            reset_all_states()
             st.success("Session reset successfully!")
+            st.rerun()
 
     # Main chat interface
     st.title("💬 Document Q&A Chat")
     
-    # Chat input with label properly hidden
-    query = st.text_input(
-        label="Question Input",
-        placeholder="Ask a question about your documents...",
-        key="query_input",
-        label_visibility="collapsed"
-    )
-
-    if query:
+    def process_query():
+        """Callback to process the query and clear input"""
+        query = st.session_state[st.session_state["query_input_key"]]
+        if not query:
+            return
+            
         with st.spinner("Searching documents and generating answer..."):
             context_docs = qa_system.similarity_search(query)
             if context_docs:
@@ -284,6 +303,19 @@ def main():
                 )
             else:
                 st.warning("Please upload and process documents before asking questions.")
+        
+        # Clear the input by changing its key
+        st.session_state["query_input_key"] = f"query_input_{datetime.now().timestamp()}"
+
+
+    # Chat input with dynamic key to reset it
+    query = st.text_input(
+        label="Question Input",
+        placeholder="Ask a question about your documents...",
+        key=st.session_state["query_input_key"],
+        label_visibility="collapsed",
+        on_change=process_query
+    )
 
     # Display chat history
     if st.session_state.chat_history:
