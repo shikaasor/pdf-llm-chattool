@@ -1,8 +1,9 @@
-streamlit
-google-generativeai
-python-dotenv
-langchain
-PyPDF2
-chromadb
-faiss-cpu
-langchain_google_genai
+pdf2image
+faiss-cpu>=1.7.4
+streamlit>=1.31.0
+langchain-community>=0.0.10
+langchain-core>=0.1.10
+langchain-groq>=0.0.1
+langchain-google-genai>=0.0.5
+python-dotenv>=1.0.0
+pdfplumber>=0.10.3

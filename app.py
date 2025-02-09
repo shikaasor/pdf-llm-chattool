@@ -1,100 +1,312 @@
+from datetime import datetime
 import streamlit as st
-from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+import logging
 import os
+import threading
+from typing import List, Optional
+from dataclasses import dataclass
+from pathlib import Path
+from langchain_community.document_loaders import PDFPlumberLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_groq import ChatGroq
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-import google.generativeai as genai
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains.question_answering import load_qa_chain #to chain the prompts
-from langchain.prompts import PromptTemplate
+from langchain_core.documents import Document
 from dotenv import load_dotenv
 
+# Load environment variables and configure logging
 load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-genai.configure(api_key = os.getenv("GOOGLE_API_KEY"))
+@dataclass
+class ChatMessage:
+    timestamp: str
+    question: str
+    answer: str
+    context: str
 
-def get_pdf_text(pdf_docs):
-    text = ""
-    # read all uploaded pdf files into one text file
-    for pdf in pdf_docs:
-        pdf_reader = PdfReader(pdf)
-        # iterate over all pages in a pdf
-        for page in pdf_reader.pages:
-            text += page.extract_text()
-    return text
-
-def get_text_chunks(text):
-    # create a RecursiveCharacterTextSplitter object with a specific chunk size and overlap size
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size = 10000, chunk_overlap = 1000)
-    # now split the text we have using object created
-    chunks = text_splitter.split_text(text)
-
-    return chunks
-
-def get_vector_store(text_chunks):
-    embeddings = GoogleGenerativeAIEmbeddings(model = "models/embedding-001") # google embeddings
-    vector_store = FAISS.from_texts(text_chunks,embeddings) # use the embedding object on the splitted text of pdf docs
-    vector_store.save_local("faiss_index") # save the embeddings in local
-
-def get_conversation_chain():
-
-    # define the prompt
-    prompt_template = """
-    Answer the question as detailed as possible from the provided context, make sure to provide all the details, if the answer is not in
-    provided context just say, "answer is not available in the context", don't provide the wrong answer\n\n
-    Context:\n {context}?\n
-    Question: \n{question}\n
-
-    Answer:
-    """
-
-    model = ChatGoogleGenerativeAI(model = "gemini-pro", temperatue = 0.3) # create object of gemini-pro
-
-    prompt = PromptTemplate(template = prompt_template, input_variables= ["context","question"])
-
-    chain = load_qa_chain(model,chain_type="stuff",prompt = prompt)
-
-    return chain
-
-def user_input(user_question):
-    # user_question is the input question
-    embeddings = GoogleGenerativeAIEmbeddings(model = "models/embedding-001")
-    # load the local faiss db
-    new_db = FAISS.load_local("faiss_index", embeddings)
-
-    # using similarity search, get the answer based on the input
-    docs = new_db.similarity_search(user_question)
-
-    chain = get_conversation_chain()
-
+class DocumentQASystem:
+    TEMP_DIR = Path("temp")
     
-    response = chain(
-        {"input_documents":docs, "question": user_question}
-        , return_only_outputs=True)
+    def __init__(self):
+        self._load_api_keys()
+        self._initialize_components()
+        self._initialize_session_state()
+        
+    def _load_api_keys(self):
+        """Load and validate API keys."""
+        self.groq_api_key = os.getenv("GROQ_API_KEY")
+        self.google_api_key = os.getenv("GOOGLE_API_KEY")
+        
+        if not self.groq_api_key or not self.google_api_key:
+            raise ValueError("Missing required API keys. Please check your .env file.")
 
-    print(response)
-    st.write("Reply: ", response["output_text"])
+    def _initialize_components(self):
+        """Initialize LLM components with error handling."""
+        try:
+            self.embeddings = GoogleGenerativeAIEmbeddings(
+                model="models/text-embedding-004",
+                google_api_key=self.google_api_key
+            )
+            
+            self.llm = ChatGroq(
+                temperature=0.1,
+                model_name="llama3-8b-8192",
+                groq_api_key=self.groq_api_key,
+                max_tokens=1024
+            )
+            
+            self.output_parser = StrOutputParser()
+            self.vector_store = None
+            
+            self.text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200,
+                length_function=len,
+                separators=["\n\n", "\n", " ", ""]
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize components: {str(e)}")
+            raise
+
+    def _initialize_session_state(self):
+        """Initialize Streamlit session state variables."""
+        if 'uploaded_files' not in st.session_state:
+            st.session_state.uploaded_files = []
+        if 'chat_history' not in st.session_state:
+            st.session_state.chat_history = []
+        if 'vector_store' not in st.session_state:
+            st.session_state.vector_store = None
+
+    def upload_and_process_document(self, uploaded_file) -> bool:
+        """Process uploaded PDF with improved error handling and cleanup."""
+        temp_file_path = self.TEMP_DIR / uploaded_file.name
+        
+        try:
+            self.TEMP_DIR.mkdir(exist_ok=True)
+            temp_file_path.write_bytes(uploaded_file.getvalue())
+            
+            docs = PDFPlumberLoader(str(temp_file_path)).load()
+            chunks = self.text_splitter.split_documents(docs)
+            
+            # Store vector_store in session state for persistence
+            if st.session_state.vector_store is None:
+                st.session_state.vector_store = FAISS.from_documents(chunks, self.embeddings)
+            else:
+                st.session_state.vector_store.add_documents(chunks)
+            
+            # Update instance variable
+            self.vector_store = st.session_state.vector_store
+            return True
+            
+        except Exception as e:
+            logger.error(f"Document processing failed: {str(e)}")
+            st.error(f"Failed to process {uploaded_file.name}: {str(e)}")
+            return False
+            
+        finally:
+            if temp_file_path.exists():
+                temp_file_path.unlink()
+
+    def similarity_search(self, query: str, top_k: int = 5) -> List[Document]:
+        """Perform similarity search with validation and error handling."""
+        if not query.strip():
+            raise ValueError("Query cannot be empty")
+            
+        if st.session_state.vector_store is None:
+            logger.warning("No documents loaded for search")
+            return []
+            
+        try:
+            results = st.session_state.vector_store.similarity_search(
+                query,
+                k=top_k,
+                fetch_k=20
+            )
+            return results
+            
+        except Exception as e:
+            logger.error(f"Similarity search failed: {str(e)}")
+            return []
+
+    def generate_answer(self, user_query: str, context_docs: List[Document]) -> str:
+        """Generate answer with improved prompt and error handling."""
+        if not context_docs:
+            return "Please upload and process some documents before asking questions."
+            
+        try:
+            PROMPT_TEMPLATE = """You are an expert research assistant. Answer the question based on the provided context.
+            Guidelines:
+            - Be concise and factual (max 5 sentences)
+            - Cite specific parts of the documents when possible
+            - Express uncertainty when the context doesn't fully answer the question
+            - Focus only on information present in the context
+            
+            Context: {document_context}
+            
+            Question: {user_query}
+            
+            Answer: """
+            
+            context_text = "\n\n".join([
+                f"Document {i+1}: {doc.page_content}"
+                for i, doc in enumerate(context_docs)
+            ])
+            
+            conversation_prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+            chain = conversation_prompt | self.llm | self.output_parser
+            
+            return chain.invoke({
+                "user_query": user_query,
+                "document_context": context_text
+            })
+            
+        except Exception as e:
+            logger.error(f"Answer generation failed: {str(e)}")
+            return "I encountered an error while generating the answer. Please try again."
+
+def setup_streamlit_ui():
+    """Configure Streamlit UI with improved styling."""
+    st.set_page_config(
+        page_title="PDF Question Answering System",
+        page_icon="📚",
+        layout="wide"
+    )
+    
+    st.markdown("""
+        <style>
+        .stApp {
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+        .chat-message {
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .chat-message.question {
+            background-color: #1E2261;
+            color: white;
+        }
+        .chat-message.answer {
+            background-color: #000000;
+            border: 1px solid #e2e8f0;
+        }
+        .chat-context {
+            font-size: 0.875rem;
+            color: #64748b;
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid #e2e8f0;
+        }
+        .timestamp {
+            color: #94a3b8;
+            font-size: 0.75rem;
+        }
+        .stTextInput > label {
+            display: none;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
 def main():
-    st.set_page_config("Chat PDF")
-    st.header("Chat with PDF using Gemini")
+    setup_streamlit_ui()
+    qa_system = DocumentQASystem()
 
-    user_question = st.text_input("Ask a Question:")
-
-    if user_question:
-        user_input(user_question)
-
+    # Sidebar
     with st.sidebar:
-        st.title("Menu:")
-        pdf_docs = st.file_uploader("Upload your PDF Files and Click on the Submit & Process Button", accept_multiple_files=True)
-        if st.button("Submit & Process"):
-            with st.spinner("Processing..."):
-                raw_text = get_pdf_text(pdf_docs)
-                text_chunks = get_text_chunks(raw_text)
-                get_vector_store(text_chunks)
-                st.success("Done")
+        st.title("📑 Document Management")
+        
+        uploaded_files = st.file_uploader(
+            "Upload PDF Documents",
+            type=['pdf'],
+            accept_multiple_files=True,
+            help="Upload one or more PDF documents to analyze",
+            label_visibility="visible"
+        )
+        
+        if st.button("Process Documents", type="primary"):
+            if uploaded_files:
+                progress_bar = st.progress(0)
+                for i, uploaded_file in enumerate(uploaded_files):
+                    if uploaded_file.name not in st.session_state.uploaded_files:
+                        with st.spinner(f"Processing {uploaded_file.name}..."):
+                            if qa_system.upload_and_process_document(uploaded_file):
+                                st.session_state.uploaded_files.append(uploaded_file.name)
+                                st.success(f"✅ {uploaded_file.name}")
+                        progress_bar.progress((i + 1) / len(uploaded_files))
+                progress_bar.empty()
+            else:
+                st.warning("Please upload documents first.")
+        
+        if st.session_state.uploaded_files:
+            st.markdown("### 📚 Processed Documents")
+            for file in st.session_state.uploaded_files:
+                st.text(f"• {file}")
+        
+        if st.button("Reset Session", type="secondary"):
+            st.session_state.uploaded_files = []
+            st.session_state.chat_history = []
+            st.session_state.vector_store = None
+            qa_system.vector_store = None
+            st.success("Session reset successfully!")
 
+    # Main chat interface
+    st.title("💬 Document Q&A Chat")
+    
+    # Chat input with label properly hidden
+    query = st.text_input(
+        label="Question Input",
+        placeholder="Ask a question about your documents...",
+        key="query_input",
+        label_visibility="collapsed"
+    )
+
+    if query:
+        with st.spinner("Searching documents and generating answer..."):
+            context_docs = qa_system.similarity_search(query)
+            if context_docs:
+                answer = qa_system.generate_answer(query, context_docs)
+                context_summary = "\n".join([doc.page_content[:200] + "..." for doc in context_docs[:2]])
+                
+                st.session_state.chat_history.append(
+                    ChatMessage(
+                        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        question=query,
+                        answer=answer,
+                        context=context_summary
+                    )
+                )
+            else:
+                st.warning("Please upload and process documents before asking questions.")
+
+    # Display chat history
+    if st.session_state.chat_history:
+        for chat in reversed(st.session_state.chat_history):
+            st.markdown(
+                f"""<div class="chat-message question">
+                    <strong>Question:</strong> {chat.question}
+                    <div class="timestamp">{chat.timestamp}</div>
+                </div>
+                <div class="chat-message answer">
+                    <strong>Answer:</strong> {chat.answer}
+                    <div class="chat-context">
+                        <strong>Related Context:</strong><br>{chat.context}
+                    </div>
+                </div>""",
+                unsafe_allow_html=True
+            )
+    else:
+        st.info("Upload documents and start asking questions to begin the conversation!")
+
+    # Footer
+    st.markdown("---")
+    st.markdown("*Powered by Groq, Google AI, and LangChain*")
 
 if __name__ == "__main__":
     main()
